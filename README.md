@@ -1,14 +1,63 @@
-# PSU Deobfuscator
+<div align="center">
 
-Static devirtualizer for PSU-obfuscated Lua. It recovers the packed VM chunk, classifies VM handlers, expands superinstructions, rebuilds Lua 5.1 bytecode, and cleans the decompiler output into readable Lua.
+# PSU-Deobfuscator
 
-The default source cleanup renames decompiler temporaries to deterministic `v1`, `v2`, `v3`, ... names and folds common decompiler artifacts such as repeated table/member chains and method-call setup.
+### Static Devirtualizer for the Ol' Pal PSU
+
+![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![Lua](https://img.shields.io/badge/Lua-5.1-2C2D72?style=flat-square&logo=lua&logoColor=white)
+![Mode](https://img.shields.io/badge/mode-static-black?style=flat-square)
+
+<sub>Recover the VM. Lift the instructions. Get readable Lua back.</sub>
+
+</div>
+
+---
+
+PSU-Deobfuscator statically recovers PSU's packed VM, identifies its handlers, expands superinstructions, lowers the recovered program back to Lua 5.1 bytecode, and cleans up the resulting source.
+
+No runtime execution is required for the lifting stage.
+
+## How it works
+
+```text
+obfuscated Lua
+      │
+      ▼
+ wrapper / payload recovery
+      │
+      ▼
+ VM + handler identification
+      │
+      ▼
+ superinstruction expansion
+      │
+      ▼
+ semantic lifting
+      │
+      ▼
+ Lua 5.1 bytecode
+      │
+      ▼
+     unluac
+      │
+      ▼
+ source cleanup
+      │
+      ▼
+ readable Lua
+```
+
+> [!NOTE]
+> The decoder is intentionally conservative. If a handler or operand layout cannot be recovered with enough confidence, it fails instead of inventing bytecode.
 
 ## Requirements
 
-- Node.js 18 or newer
-- Java only when producing source through unluac
-- `unluac.jar` for source decompilation
+| Requirement | Notes |
+|---|---|
+| **Node.js 18+** | Required |
+| **Java** | Required for source output through unluac |
+| **`unluac.jar`** | Place it in `tools/unluac.jar` or provide a custom path |
 
 Install dependencies:
 
@@ -16,52 +65,138 @@ Install dependencies:
 npm install
 ```
 
-Place unluac at `tools/unluac.jar`, set `UNLUAC_JAR`, or pass `--unluac <path>`.
+Place unluac here:
+
+```text
+tools/unluac.jar
+```
+
+Or point to it manually with `--unluac` or `UNLUAC_JAR`.
+
+---
 
 ## Usage
 
-```bash
-npm run deobf -- script.lua
-```
-
-The default output is `script.deobf.lua`.
+### Deobfuscate a file
 
 ```bash
-npm run deobf -- script.lua -o recovered.lua
-npm run deobf -- script.lua --bytecode recovered.luac
-npm run deobf -- script.lua --check
-npm run deobf -- script.lua --raw
-npm run deobf -- script.lua --json
+npm run deobf -- input.lua
 ```
 
-`--check` performs parsing, payload recovery, VM decoding, handler recovery, superinstruction expansion, and Lua 5.1 lowering without invoking unluac. It is useful for compatibility testing and does not require Java.
-
-`--raw` keeps unluac's original temporary names and formatting. Normal output applies the readable cleanup pass.
-
-## Tests
-
-```bash
-npm test
-npm run test:samples
-```
-
-`npm test` runs the fast semantic and source-cleanup tests. `npm run test:samples` checks the bundled corpus and reports known unsupported or malformed fixtures separately from regressions.
-
-## Layout
+Default output:
 
 ```text
-src/core/        wrapper analysis, payload and VM decoding
-src/ir/          semantic recovery and Lua 5.1 lowering
-src/bytecode/    Lua 5.1 chunk writer
-src/decompile/   unluac integration
-src/emit/        source cleanup
-src/cli.js       command-line interface
-test/            fast regression tests
-samples/         compatibility corpus
+input.deobf.lua
 ```
 
-## Notes
+### Choose an output file
 
-The decoder intentionally rejects layouts it cannot validate instead of emitting guessed bytecode. PSU variants can differ in wrapper shape, handler composition, and operand layout, so unsupported samples should be treated as decoder work rather than forced through lossy fallbacks.
+```bash
+npm run deobf -- input.lua -o output.lua
+```
 
-Only inspect code you are authorized to analyze.
+### Recover bytecode only
+
+```bash
+npm run deobf -- input.lua --bytecode output.luac
+```
+
+### Run the decoder/lifter only
+
+Useful when you want to test recovery without invoking unluac.
+
+```bash
+npm run deobf -- input.lua --check
+```
+
+### Keep raw unluac output
+
+Skips the final cleanup pass.
+
+```bash
+npm run deobf -- input.lua --raw
+```
+
+### Print recovery information
+
+```bash
+npm run deobf -- input.lua --json
+```
+
+### Use a custom unluac path
+
+```bash
+npm run deobf -- input.lua --unluac /path/to/unluac.jar
+```
+
+<details>
+<summary><b>Quick command reference</b></summary>
+
+<br>
+
+| Command | Purpose |
+|---|---|
+| `npm run deobf -- input.lua` | Full deobfuscation |
+| `-o output.lua` | Custom source output |
+| `--bytecode output.luac` | Emit Lua 5.1 bytecode |
+| `--check` | Decode/lift only |
+| `--raw` | Skip source cleanup |
+| `--json` | Print recovery data |
+| `--unluac <path>` | Use another unluac JAR |
+
+</details>
+
+---
+
+## Project structure
+
+```text
+src/
+├── bytecode/       Lua 5.1 chunk writer
+├── core/           wrapper parsing, payload decoding and VM recovery
+├── decompile/      unluac integration
+├── emit/           source cleanup
+├── ir/             semantic recovery and lowering
+├── cli.js
+├── deobfuscator.js
+└── testSamples.js
+
+tools/              external tooling
+```
+
+<details>
+<summary><b>Pipeline notes</b></summary>
+
+<br>
+
+The project keeps the VM recovery and source decompilation stages separate.
+
+That means the actual decoder/lifter can be tested without Java or unluac, while the final source stage can still take advantage of unluac when readable Lua output is wanted.
+
+Recovered temporary locals are normalized to simple names such as:
+
+```lua
+v1
+v2
+v3
+```
+
+instead of preserving noisy decompiler-generated identifiers.
+
+</details>
+
+---
+
+## Credits
+
+**LSD** — original work and research this project builds on.
+
+**unluac** — Lua 5.1 bytecode decompiler used for source recovery.
+
+---
+
+<div align="center">
+
+<sub>PSU goes in. Lua comes out.</sub>
+
+</div>
