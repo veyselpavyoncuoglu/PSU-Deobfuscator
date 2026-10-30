@@ -162,7 +162,8 @@ function classifyCompoundSegment(text) {
 
   if (
     normalized.includes("t4=t3[t0[t1]]") &&
-    normalized.includes("R[t5]=t4")
+    normalized.includes("R[t5]=t4") &&
+    /\bt\d+=ENV\b/.test(normalized)
   ) {
     const reloads = normalized.match(/t0=I/g)?.length ?? 0;
     if (reloads > 0) {
@@ -174,7 +175,39 @@ function classifyCompoundSegment(text) {
     }
   }
 
+  if (
+    normalized.includes("t4=t3[t0[t1]]") &&
+    normalized.includes("R[t5]=t4") &&
+    /\bt\d+=I\b/.test(normalized) &&
+    !/\bt\d+=ENV\b/.test(normalized) &&
+    /^local t\d+(?:;local t\d+)*;(?:t\d+=I;t\d+=R;t\d+=R;t\d+=t\d+\[t\d+\[t\d+\]\];t\d+=t\d+\[t\d+\];?)+t\d+=I;R\[t\d+\]=t\d+/.test(normalized.replace(/t\d+=R;(?=t\d+=R)/g, "x")) === false
+  ) {
+    return [{ kind: "move", sourceField: "b", destinationField: "a" }];
+  }
+
   return null;
+}
+
+function junkyGetGlobal(text) {
+  const declaresTemps = /^local t\d+(?:;local t\d+)*;/.test(text);
+  if (!declaresTemps) return false;
+  const hasEnvironmentLoad = /(?:^|;)t\d+=ENV(?:;|$)/.test(`${text};`);
+  const hasConstantKey = /(?:^|;)t\d+=(?:I\.[ABC]|v_[A-Za-z0-9_]+\[I\.[ABC]\])(?:;|$)/.test(`${text};`);
+  const hasEnvironmentRead = /t\d+=t\d+\[t\d+\]/.test(text);
+  const hasStackWrite = /R\[t\d+\]=t\d+/.test(text);
+  const onlyKnownShapes = text
+    .split(";")
+    .every((statement) =>
+      statement === "" ||
+      /^local t\d+$/.test(statement) ||
+      /^t\d+=ENV$/.test(statement) ||
+      /^t\d+=v_o\[I\.[ABC]\]$/.test(statement) ||
+      /^t\d+=t\d+\[t\d+\]$/.test(statement) ||
+      /^t\d+=I\[\w+\]$/.test(statement) ||
+      /^t\d+=I\.[ABC]$/.test(statement) ||
+      /^R\[t\d+\]=t\d+$/.test(statement)
+    );
+  return hasEnvironmentLoad && hasConstantKey && hasEnvironmentRead && hasStackWrite && onlyKnownShapes;
 }
 
 function classifySegment(text) {
@@ -200,6 +233,7 @@ function classifySegment(text) {
   ]);
   if (text === "return ") return { kind: "return", mode: "none" };
   if (exact.has(text)) return exact.get(text);
+  if (junkyGetGlobal(text)) return { kind: "getglobal", keyField: "b", destinationField: "a" };
 
   let match = /^local t0=I\.([ABC]);local t1=I\.([ABC]);R\[t1\]=t0$/.exec(text);
   if (match) {

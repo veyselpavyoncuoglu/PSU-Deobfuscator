@@ -1,5 +1,6 @@
 import luaparse from "luaparse";
 import {
+  cloneStaticEnvironment,
   evaluateStatic,
   extendStaticEnvironment,
   identifierName,
@@ -277,7 +278,7 @@ function selectDispatchBody(statement, runtime, opcode) {
 }
 
 function resolveHandlerBody(runtime, opcode) {
-  const environment = new Map(runtime.environment);
+  const environment = cloneStaticEnvironment(runtime.environment);
   environment.set(runtime.opcodeName, opcode);
   for (const name of [
     runtime.instructionName,
@@ -618,6 +619,30 @@ function splitSegments(body, runtime) {
   return segments;
 }
 
+function eliminateDeadStores(text) {
+  const statements = text.split(";").filter((item) => item.length > 0);
+  const readsAfter = new Map();
+  for (const statement of statements) {
+    const match = /^(?:local )?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(statement);
+    if (!match) continue;
+    const [, target, expression] = match;
+    for (const identifier of expression.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []) {
+      readsAfter.set(identifier, (readsAfter.get(identifier) ?? 0) + 1);
+    }
+    readsAfter.delete(target);
+  }
+  return statements.filter((statement) => {
+    const match = /^(?:local )?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(statement);
+    if (!match) return true;
+    const [, target, expression] = match;
+    if (readsAfter.has(target)) return true;
+    for (const identifier of expression.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []) {
+      if (readsAfter.has(identifier)) return true;
+    }
+    return false;
+  }).join(";");
+}
+
 function canonicalizeSegments(runtime, body) {
   return splitSegments(body, runtime).map((segment) => {
     const scope = new CanonicalScope();
@@ -629,7 +654,11 @@ function canonicalizeSegments(runtime, body) {
     if (runtime.topName) scope.bind(runtime.topName, "TOP");
     if (runtime.stackName) scope.bind(runtime.stackName, "R");
     scope.bind(runtime.instructionName, "I");
-    return segment.map((statement) => printStatement(statement, scope, runtime)).join(";");
+    const text = segment
+      .map((statement) => printStatement(statement, scope, runtime))
+      .join(";");
+    const cleaned = eliminateDeadStores(text);
+    return cleaned === "" ? "local t0=I.A" : cleaned;
   });
 }
 

@@ -42,6 +42,61 @@ function staticClosure(declaration, environment) {
   };
 }
 
+
+function collectDeclaredNames(statements, names) {
+  for (const statement of statements) {
+    switch (statement.type) {
+      case "LocalStatement":
+        for (const variable of statement.variables) {
+          const name = identifierName(variable);
+          if (name) names.add(name);
+        }
+        break;
+      case "FunctionDeclaration":
+        if (statement.identifier?.name) names.add(statement.identifier.name);
+        break;
+      case "ForNumericStatement":
+        names.add(statement.variable.name);
+        break;
+      case "ForGenericStatement":
+        for (const variable of statement.variables) {
+          const name = identifierName(variable);
+          if (name) names.add(name);
+        }
+        break;
+      case "IfStatement":
+        for (const clause of statement.clauses) collectDeclaredNames(clause.body, names);
+        break;
+      case "WhileStatement":
+      case "RepeatStatement":
+      case "DoStatement":
+        collectDeclaredNames(statement.body, names);
+        break;
+      default:
+        break;
+    }
+  }
+}
+export function cloneStaticEnvironment(environment, seen = new Map()) {
+  const existing = seen.get(environment);
+  if (existing) return existing;
+  const clone = new Map();
+  seen.set(environment, clone);
+  for (const [name, value] of environment) {
+    clone.set(
+      name,
+      value?.staticFunction === true
+        ? {
+            staticFunction: true,
+            declaration: value.declaration,
+            environment: cloneStaticEnvironment(value.environment, seen)
+          }
+        : value
+    );
+  }
+  return clone;
+}
+
 function evaluateFunctionCall(node, environment) {
   let callable = node.base?.type === "FunctionDeclaration"
     ? staticClosure(node.base, environment)
@@ -56,11 +111,13 @@ function evaluateFunctionCall(node, environment) {
     throw new Error(`Unsupported static call ${node.base?.type}:${node.base?.name ?? ""}`);
   }
   const localEnvironment = new Map(environment);
-  if (callable?.staticFunction === true) {
+  const isClosureCall = callable?.staticFunction === true;
+  if (isClosureCall) {
     for (const [name, value] of closureEnvironment) {
       localEnvironment.set(name, value);
     }
   }
+  const upvalueWrites = isClosureCall ? new Map() : null;
   const argumentValues = node.arguments.map((argument) =>
     firstValue(evaluateStatic(argument, environment))
   );
@@ -76,7 +133,26 @@ function evaluateFunctionCall(node, environment) {
   }
   localEnvironment.set("...", { multiple: true, values: varargs });
 
+  const declaredInCall = new Set(
+    declaration.parameters.map((parameter) => parameter.name).filter(Boolean)
+  );
+  collectDeclaredNames(declaration.body, declaredInCall);
+  const isDeclaredInCall = (name) => declaredInCall.has(name);
   function execute(statements, scope) {
+    const bound = [];
+    const declare = (name, value) => {
+      bound.push(name, scope.has(name) ? scope.get(name) : undefined, scope.has(name));
+      scope.set(name, value);
+    };
+    const restore = () => {
+      for (let index = bound.length - 3; index >= 0; index -= 3) {
+        const name = bound[index];
+        const value = bound[index + 1];
+        const existed = bound[index + 2];
+        if (existed) scope.set(name, value);
+        else scope.delete(name);
+      }
+    };
     for (const statement of statements) {
       if (statement.type === "LocalStatement") {
         const values = [];
@@ -90,7 +166,7 @@ function evaluateFunctionCall(node, environment) {
         }
         for (let index = 0; index < statement.variables.length; index += 1) {
           const name = identifierName(statement.variables[index]);
-          if (name) scope.set(name, values[index] ?? null);
+          if (name) declare(name, values[index] ?? null);
         }
         continue;
       }
@@ -108,6 +184,13 @@ function evaluateFunctionCall(node, environment) {
           const variable = statement.variables[index];
           const value = values[index] ?? null;
           if (variable.type === "Identifier") {
+            if (
+              upvalueWrites !== null &&
+              closureEnvironment.has(variable.name) &&
+              !isDeclaredInCall(variable.name)
+            ) {
+              upvalueWrites.set(variable.name, value);
+            }
             scope.set(variable.name, value);
           } else if (variable.type === "IndexExpression") {
             const base = firstValue(evaluateStatic(variable.base, scope));
@@ -167,12 +250,18 @@ function evaluateFunctionCall(node, environment) {
           values.push(firstValue(value));
         }
       }
+      restore();
       return { returned: true, break: false, value: { multiple: true, values } };
     }
+    restore();
     return { returned: false, break: false, value: null };
   }
-
-  return execute(declaration.body, localEnvironment).value;
+ 
+  const outcome = execute(declaration.body, localEnvironment);
+  if (upvalueWrites) {
+    for (const [name, value] of upvalueWrites) closureEnvironment.set(name, value);
+  }
+  return outcome.value;
 }
 
 function evaluateTable(node, environment) {
@@ -271,7 +360,10 @@ export function evaluateStatic(node, environment = new Map()) {
         case "-": return left - right;
         case "*": return left * right;
         case "/": return left / right;
-        case "%": return left % right;
+        case "%": {
+          if (right === 0) throw new Error("Static modulo by zero");
+          return ((left % right) + right) % right;
+        }
         case "^": return left ** right;
         case "==": return left === right;
         case "~=": return left !== right;

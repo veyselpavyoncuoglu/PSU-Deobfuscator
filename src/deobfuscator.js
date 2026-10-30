@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { analyzeV5 } from "./core/v5Analyzer.js";
 import { analyzeWrapper } from "./core/wrapperAnalyzer.js";
 import { decodePayload } from "./core/payload.js";
 import { decodeChunkPayload } from "./core/chunkDecoder.js";
@@ -23,6 +24,19 @@ function countUnknownInstructions(chunk) {
 function validateInput(source) {
   if (!source.includes("PSU|")) {
     throw new Error("Input does not contain a PSU payload");
+  }
+  const v5 = analyzeV5(source);
+  if (v5.version) {
+    const payloadInfo = v5.payload
+      ? `${Math.round(v5.payload.length / 1000)}KB encrypted base62 payload`
+      : "no base62 payload found";
+    throw new Error(
+      `PSU ${v5.version} is not supported: this format encrypts its bytecode stream ` +
+      `(${payloadInfo}) with a keystream set up by a deliberately mangled prologue. ` +
+      `The VM core, opcode dispatch (0-62, no shuffler) and constant table are statically ` +
+      `recoverable, but the payload cipher cannot be reconstructed without the closed-source ` +
+      `obfuscator or a second sample to diff against. Supported: PSU 4.0.A / 4.5.A.`
+    );
   }
 }
 
